@@ -1,0 +1,116 @@
+function [B, seB, tB, pB, Rsq] = glm_fmri_fit(data,X,regIndx,mask)
+%
+% this function takes in a 4D fMRI dataset and a model as arguments, fits
+% the model to the data at each voxel using least squares, and returns the
+% estimated parameters.  Skips voxels where the mask is set to 0 or false.
+
+%%%%%%%%%%%%%%%%%%%%%% INPUTS:
+
+% data - 4D dataset with time series in the 4th d
+% X - design matrix of regressors
+% regIndx - vector w/length = # of regressors, 0 for baseline and >=1 for
+%       regressors of interest
+% mask - (optional) 3D dataset of 0s and 1s matching data dimensions
+
+%%%%%%%%%%%%%%%%%%%%%% OUTPUTS:
+
+% B coefficients fitted w/OLS for every voxel in 3d matrix that doesn't
+% have a "0" in the first volume (these are considered to be masked out
+% voxels). Also:
+%
+% 'seB'     - standard error of each regression coefficient
+% 'tB'      - this returns the t or F-stat grouped by regIndx as appropriate
+% 'pB'      - corresponding p-values for each t-stat
+% 'Rsq'     - Rsquared for the full model not including the baseline
+
+% kelly May 2012
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% define data dimensions and parameters to estimate
+
+dim = size(data);
+[N,p] = size(X);  % number of time points & model parameters
+df = N - p;         % df = # of data points - parameters estimated
+p0 = length(regIndx(regIndx==0)); % # of baseline params
+df0 = N - p0;       % df for baseline model
+
+% make sure the data and mask dimensions agree
+if exist('mask','var')
+    if dim(1:3) ~= size(mask)
+        error('fmri data and mask dimensions must agree\n\n');
+    end
+else  % if no mask is given, do all voxels
+    mask = ones(dim(1:3));
+end
+
+% check to make sure # of time points and # of rows in design matrix equal each other
+if N ~= dim(4)
+    error('the number of rows in the design matrix has to equal the data.')
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%% define arrays of zeros for out stats
+
+B = zeros(dim(1),dim(2),dim(3),p);
+seB = zeros(size(B));
+tB = zeros(size(B));
+pB = zeros(size(B));
+Rsq = zeros(dim(1:3));
+
+%% fit model X to data
+
+% get subscripts for all voxels of interest (within brain or roi mask)
+indx = find(mask);
+[i j k] = ind2sub(size(data),indx);
+tenths = round(linspace(0,length(indx),11));
+
+fprintf('\nfitting the model...\n\n');
+
+for v = 1:length(indx)
+    
+    Y = squeeze(data(i(v),j(v),k(v),:)); % get a voxel's time series
+    
+    these_B = pinv(X'*X)*X'*Y;           % estimate betas using OLS
+    
+    zeroInd = find(these_B==0);          % if a beta==0,
+    these_B(zeroInd) = -.0001;           % change it to be a very small nonzero value
+    
+    B(i(v),j(v),k(v),:) = these_B;
+    
+    Yhat = X*these_B;                    % model's prediction for Y
+    
+    residuals = Y - Yhat;                % residuals
+    
+    SSe = sum( (residuals).^2 );         % residual SS, aka squared error
+    
+    MSe = SSe./df;                       % mean sq error aka error variance
+    
+    s2matrix = MSe.*pinv(X'*X);          % var-cov matrix for the regressors
+    s2B = diag(s2matrix);                % each regressor's variance
+    
+    these_seB = sqrt(s2B);               % standard error of betas
+    seB(i(v),j(v),k(v),:) = these_seB;
+    
+    these_tB = these_B ./ these_seB;     % distributed as t w/ N-2 df
+    tB(i(v),j(v),k(v),:) = these_tB;
+    
+    these_pB = 1 - tcdf(abs(these_tB), N-2);  % p-value for t-stat
+    pB(i(v),j(v),k(v),:) = these_pB;
+    
+    Yhat0 = X(:,regIndx==0)*these_B(regIndx==0); % baseline model's Y estimate,
+    
+    SSe0 = sum( (Y - Yhat0).^2 );                % & squared error
+    
+    this_Rsq = 100 * (1 - (SSe / SSe0 )); % Coefficient of Multiple Determination, Rsquared
+    Rsq(i(v),j(v),k(v)) = this_Rsq;
+    
+    %
+    if ismember(v,tenths)
+        fprintf('\n%2.0f percent done...\n', round(v/length(indx)*100));
+    end % 
+    
+end
+
+fprintf('\ndone fitting model.\n\n');
+
+
